@@ -1,4 +1,4 @@
- // ESP32 Web Debugger — Pure ESP-IDF Rewrite
+// ESP32 Web Debugger — Pure ESP-IDF Rewrite
 // Supports GPIO, PWM, ADC, UART, I2C, WebSocket, SPIFFS Web UI
 #include "sdkconfig.h"
 #include <esp_http_server.h>
@@ -21,8 +21,15 @@
 #include <esp_adc/adc_oneshot.h>
 
 #define TAG "WebDebug"
-#define WIFI_SSID "SSID"
-#define WIFI_PASS "PASSWORD"
+#define WIFI_SSID "Nokia Repeater"
+#define WIFI_PASS "12345678"
+
+// AP Configuration
+#define AP_SSID "ESP32-Debugger"
+#define AP_PASS "12345678"
+#define AP_CHANNEL 1
+#define AP_MAX_CONNECTIONS 4
+#define AP_SSID_HIDDEN 0
 
 #define I2C_MASTER_SDA 21
 #define I2C_MASTER_SCL 22
@@ -33,6 +40,9 @@
 
 #define OSCILLO_ADC_CHANNEL ADC_CHANNEL_6  // GPIO34 = ADC1_CH6
 #define MAX_WS_CLIENTS 8
+
+// Function prototypes
+static void network_init_task(void* parameter);
 
 static httpd_handle_t server = NULL;
 
@@ -283,6 +293,40 @@ static void oscilloscope_task(void* arg) {
     }
 }
 
+static void wifi_status_task(void* arg) {
+    while (1) {
+        wifi_ap_record_t ap_info;
+        wifi_sta_list_t sta_list;
+        char json[256];
+        wifi_mode_t mode;
+
+        esp_wifi_get_mode(&mode);
+        esp_wifi_ap_get_sta_list(&sta_list);
+        esp_wifi_sta_get_ap_info(&ap_info);
+
+        snprintf(json, sizeof(json), 
+            "{\"wifi\":{"
+            "\"mode\":\"APSTA\","
+            "\"ap\":{"
+            "\"ssid\":\"%s\","
+            "\"connected_stations\":%d"
+            "},"
+            "\"sta\":{"
+            "\"connected\":%s,"
+            "\"rssi\":%d"
+            "}"
+            "}}",
+            AP_SSID,
+            sta_list.num,
+            ap_info.rssi != 0 ? "true" : "false",
+            ap_info.rssi
+        );
+        
+        notify_clients(json);
+        vTaskDelay(pdMS_TO_TICKS(5000)); // Update every 5 seconds
+    }
+}
+
 static void mount_spiffs() {
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
@@ -345,30 +389,76 @@ static void start_web_server() {
 static void wifi_init() {
     esp_netif_init();
     esp_event_loop_create_default();
+    
+    // Create both AP and STA interfaces
+    esp_netif_create_default_wifi_ap();
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    wifi_config_t wifi_config = {
+    // Configure AP
+    wifi_config_t ap_config = {
+        .ap = {
+            .ssid = AP_SSID,
+            .ssid_len = strlen(AP_SSID),
+            .channel = AP_CHANNEL,
+            .password = AP_PASS,
+            .max_connection = AP_MAX_CONNECTIONS,
+            .authmode = WIFI_AUTH_WPA2_PSK,
+            .ssid_hidden = AP_SSID_HIDDEN
+        }
+    };
+
+    // Configure STA
+    wifi_config_t sta_config = {
         .sta = {
             .ssid = WIFI_SSID,
             .password = WIFI_PASS
         }
     };
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    // Set mode to APSTA (both AP and STA)
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    
+    // Set configurations
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
+    
+    // Start WiFi
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_connect());
+}
+
+static void network_init_task(void* parameter) {
+    // Initialize WiFi first
+    wifi_init();
+    vTaskDelay(pdMS_TO_TICKS(2000));  // Wait for IP
+    
+    // Then start the web server
+    start_web_server();
+    
+    // Create WiFi status monitoring task
+    xTaskCreatePinnedToCore(
+        wifi_status_task,
+        "wifi_status",
+        4096,
+        NULL,
+        1,
+        NULL,
+        1  // Run on Core 1
+    );
+    
+    // Keep the network task running
+    while(1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }
 
 void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
     memset(ws_clients, -1, sizeof(ws_clients));
     mount_spiffs();
-    wifi_init();
-    vTaskDelay(pdMS_TO_TICKS(2000));  // Wait for IP
 
     // UART Setup
     uart_config_t uart_config = {
@@ -399,7 +489,7 @@ void app_main(void) {
     adc_oneshot_new_unit(&adc_cfg, &adc_handle);
     adc_oneshot_config_channel(adc_handle, OSCILLO_ADC_CHANNEL, &(adc_oneshot_chan_cfg_t){
         .bitwidth = ADC_BITWIDTH_12,
-        .atten = ADC_ATTEN_DB_11
+        .atten = ADC_ATTEN_DB_12
     });
 
     for (int i = 0; i < NUM_PINS; i++) {
@@ -412,9 +502,18 @@ void app_main(void) {
         pwm_frequencies[i] = 0;
     }
 
-    start_web_server();
-      // Send initial pin states
+    // Create a task for network and web server operations on Core 1
+    xTaskCreatePinnedToCore(
+        network_init_task,
+        "network_init",
+        8192,
+        NULL,
+        1,
+        NULL,
+        1  // Run on Core 1
+    );
 
-    xTaskCreate(debounce_task, "debounce_task", 4096, NULL, 5, NULL);
-    xTaskCreate(oscilloscope_task, "oscilloscope_task", 4096, NULL, 5, NULL);
+    // Create other tasks on Core 0 (default core)
+    xTaskCreatePinnedToCore(debounce_task, "debounce_task", 4096, NULL, 5, NULL, 0);
+    xTaskCreatePinnedToCore(oscilloscope_task, "oscilloscope_task", 4096, NULL, 5, NULL, 0);
 }
