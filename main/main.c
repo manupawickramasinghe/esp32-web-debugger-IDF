@@ -173,7 +173,7 @@ static esp_err_t ws_handler(httpd_req_t *req) {
         }
 
         ESP_LOGI(TAG, "WebSocket client connected: sockfd=%d", sockfd);
-        send_all_pin_states();  // ✅ Send GPIO state JSON right after handshake
+        send_all_pin_states();  
         return ESP_OK;
     }
 
