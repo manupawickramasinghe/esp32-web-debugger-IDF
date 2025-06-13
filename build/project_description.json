@@ -1,7 +1,7 @@
 {
     "version":            "1",
     "project_name":       "esp32-web-debugger",
-    "project_version":    "c14a10f",
+    "project_version":    "65db09e-dirty",
     "project_path":       "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF",
     "idf_path":           "/home/manupa/esp/v5.1.3/esp-idf",
     "build_dir":          "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/build",
@@ -785,12 +785,12 @@
             "dir": "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/main",
             "type": "LIBRARY",
             "lib": "__idf_main",
-            "reqs": [ "esp_http_server", "esp_adc", "esp_timer", "nvs_flash", "esp_netif", "esp_wifi", "esp_event", "spiffs", "driver" ],
-            "priv_reqs": [],
+            "reqs": [ "esp_http_server", "esp_adc", "esp_timer", "nvs_flash", "esp_netif", "esp_wifi", "esp_event", "spiffs", "driver", "esp_system", "freertos", "soc", "hal" ],
+            "priv_reqs": [ "esp_timer", "esp_common" ],
             "managed_reqs": [],
             "managed_priv_reqs": [],
             "file": "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/build/esp-idf/main/libmain.a",
-            "sources": [ "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/main/main.c" ],
+            "sources": [ "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/main/main.c", "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/main/gpio_manager.c", "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/main/wifi_manager.c", "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/main/uart_manager.c", "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/main/i2c_manager.c", "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/main/adc_manager.c", "/home/manupa/Documents/Freelance/esp32-web-debugger-IDF/main/webserver.c" ],
             "include_dirs": [ "." ]
         },
         "mbedtls": {

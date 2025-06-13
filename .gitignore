@@ -1,9 +1,16 @@
 # Build directory
 build/
+**/build/
 
 # ESP-IDF specific
 sdkconfig
 sdkconfig.old
+.config
+*.old
+dependencies.lock
+
+# Log files
+*.log
 
 # IDE specific
 .vscode/
