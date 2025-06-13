@@ -1,0 +1,11 @@
+1.0.0
+
+Initial Release:
+- GPIO control with input/output toggle
+- Pin state updates with debounce tracking
+- Real-time WebSocket client updates
+- PWM output support
+- Oscilloscope view of analog voltage (ADC)
+- UART send/receive window
+- I2C scanner
+- Built-in WiFi STA mode + SPIFFS-based HTML interface
