@@ -1,19 +1,28 @@
-# This workflow builds the firmware for multiple ESP32 targets,
-# creates release binaries, and deploys them.
-name: Build Releases
+# This workflow builds firmware for multiple ESP32 targets, creates release
+# binaries, and deploys them to GitHub Releases and GitHub Pages.
+# It has been refactored to use a matrix strategy for maintainability.
+name: Build and Release Firmware
 
 on: [push]
 
 jobs:
+  # This job builds the firmware for all target platforms in parallel using a matrix.
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    strategy:
+      fail-fast: false # Allows other jobs to continue even if one fails
+      matrix:
+        target:
+          - { pio_env: 'esp32',    chip: 'esp32',    boot_offset: '0x1000', ota_dir: 'ESP32' }
+          - { pio_env: 'esp32-c3', chip: 'esp32c3',  boot_offset: '0x0',    ota_dir: 'ESP32-C3' }
+          - { pio_env: 'esp32-s2', chip: 'esp32s2',  boot_offset: '0x1000', ota_dir: 'ESP32-S2' }
+          - { pio_env: 'esp32-s3', chip: 'esp32s3',  boot_offset: '0x0',    ota_dir: 'ESP32-S3' }
+          - { pio_env: 'esp32-c6', chip: 'esp32c6',  boot_offset: '0x0',    ota_dir: 'ESP32-C6' }
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Fetch all history for all tags and branches
           fetch-depth: 0
 
       - name: Cache PlatformIO and pip dependencies
@@ -22,36 +31,22 @@ jobs:
           path: |
             ~/.cache/pip
             ~/.platformio/.cache
-          key: ${{ runner.os }}-pio
+          key: ${{ runner.os }}-pio-${{ matrix.target.pio_env }}
+          restore-keys: |
+            ${{ runner.os }}-pio-
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install PlatformIO Core
-        run: pip install --upgrade platformio
+      - name: Install PlatformIO Core and dependencies
+        run: |
+          pip install --upgrade platformio
+          pip install htmlmin esptool
 
       - name: Set VERSION environment variable from file
         run: echo "VERSION=$(head -1 version)" >> $GITHUB_ENV
-
-      - name: Check if Git tag already exists
-        run: |
-          TAG="v${{ env.VERSION }}"
-          # Fail the job if a non-DEV tag already exists to prevent duplicate releases.
-          if git show-ref --tags --verify --quiet "refs/tags/${TAG}" && [[ "${TAG}" != *"DEV"* ]]; then
-            echo "Error: Tag ${TAG} already exists."
-            exit 1
-          else
-            echo "Tag ${TAG} does not exist or is a DEV version. Proceeding..."
-          fi
-
-      - name: Check for trailing newline in version file
-        run: |
-          if [ -n "$(tail -c 1 "version")" ]; then
-            echo "Error: The 'version' file must end with a newline character."
-            exit 1
-          fi
 
       - name: Update firmware version and git hash in source files
         run: |
@@ -59,6 +54,12 @@ jobs:
           FILE_PATH=$(find . -name "cmd_system.c")
           if [ -z "$FILE_PATH" ]; then
             echo "Error: cmd_system.c not found in the repository."
+            exit 1
+          fi
+          # Ensure only one file was found
+          if [ $(echo "$FILE_PATH" | wc -l) -gt 1 ]; then
+            echo "Error: Found multiple cmd_system.c files. Aborting."
+            echo "$FILE_PATH"
             exit 1
           fi
           echo "Found cmd_system.c at: $FILE_PATH"
@@ -69,128 +70,80 @@ jobs:
           # Update the project version in CMakeLists.txt
           sed -i -e 's/DEV-VERSION/${{ env.VERSION }}/g' CMakeLists.txt
 
-      - name: Install Python dependencies for build scripts
-        run: |
-          python -m pip install --upgrade pip
-          pip install htmlmin esptool
-
       - name: Minify HTML files
         run: python .github/workflows/shrinkHTML.py
         shell: sh
 
-      # =================================================================
-      # Build ESP32
-      # =================================================================
-      - name: Build ESP32 firmware
-        run: platformio run -e esp32
+      - name: Build firmware for ${{ matrix.target.pio_env }}
+        run: platformio run -e ${{ matrix.target.pio_env }}
 
-      - name: Create combined binary for ESP32
+      - name: Create combined binary for ${{ matrix.target.chip }}
         run: |
-          folder=".pio/build/esp32"
-          chip="esp32"
+          folder=".pio/build/${{ matrix.target.pio_env }}"
+          chip="${{ matrix.target.chip }}"
+          version="${{ env.VERSION }}"
+          boot_offset="${{ matrix.target.boot_offset }}"
           
-          mkdir -p release/ota/ESP32/
+          # Create directories for release assets
+          mkdir -p release/zips
+          mkdir -p release/ota/${{ matrix.target.ota_dir }}
+
+          # Prepare firmware files for OTA and release
           cp version release/ota/
-          cp $folder/firmware.bin release/ota/ESP32/firmware.bin
+          cp $folder/firmware.bin release/ota/${{ matrix.target.ota_dir }}/firmware.bin
+          mv $folder/firmware.bin $folder/${chip}_gpio_debugger_v${version}.bin
           
-          mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
+          # Merge binaries for a full flash
+          esptool.py --chip $chip merge_bin -o $folder/${chip}_gpio_debugger_full_v${version}.bin --flash_mode keep --flash_freq keep --flash_size keep $boot_offset $folder/bootloader.bin 0x10000 $folder/${chip}_gpio_debugger_v${version}.bin 0x8000 $folder/partitions.bin
           
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_mode keep --flash_freq keep --flash_size keep 0x1000 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-          
-          zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin
+          # Zip release assets
+          zip -j release/zips/${chip}_gpio_debugger_update_v${version}.zip $folder/${chip}_gpio_debugger_v${version}.bin
+          zip -j release/zips/${chip}_gpio_debugger_full_v${version}.zip $folder/${chip}_gpio_debugger_full_v${version}.bin
 
-      # =================================================================
-      # Build ESP32-C3
-      # =================================================================
-      - name: Build ESP32-C3 firmware
-        run: platformio run -e esp32-c3
+      - name: Upload firmware zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-zips-${{ matrix.target.chip }}
+          path: release/zips/*.zip
 
-      - name: Create combined binary for ESP32-C3
+      - name: Upload OTA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ota-files-${{ matrix.target.chip }}
+          path: release/ota/
+
+  # This job runs after all builds are complete. It creates the GitHub release.
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set VERSION environment variable from file
+        run: echo "VERSION=$(head -1 version)" >> $GITHUB_ENV
+
+      - name: Check if Git tag already exists
         run: |
-          folder=".pio/build/esp32-c3"
-          chip="esp32c3"
-          
-          mkdir -p release/ota/ESP32-C3/
-          cp $folder/firmware.bin release/ota/ESP32-C3/firmware.bin
-          
-          mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_mode keep --flash_freq keep --flash_size keep 0x0 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-          
-          zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin
+          TAG="v${{ env.VERSION }}"
+          if git show-ref --tags --verify --quiet "refs/tags/${TAG}" && [[ "${TAG}" != *"DEV"* ]]; then
+            echo "Error: Tag ${TAG} already exists."
+            exit 1
+          fi
 
-      # =================================================================
-      # Build ESP32-S2
-      # =================================================================
-      - name: Build ESP32-S2 firmware
-        run: platformio run -e esp32-s2
-
-      - name: Create combined binary for ESP32-S2
+      - name: Download all firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_artifacts
+      
+      - name: Organize downloaded artifacts
         run: |
-          folder=".pio/build/esp32-s2"
-          chip="esp32s2"
-          
-          mkdir -p release/ota/ESP32-S2/
-          cp $folder/firmware.bin release/ota/ESP32-S2/firmware.bin
-          
-          mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_mode keep --flash_freq keep --flash_size keep 0x1000 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-          
-          zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin
+          mkdir -p release_final
+          find release_artifacts -name "*.zip" -exec mv {} release_final/ \;
 
-      # =================================================================
-      # Build ESP32-S3
-      # =================================================================
-      - name: Build ESP32-S3 firmware
-        run: platformio run -e esp32-s3
-
-      - name: Create combined binary for ESP32-S3
-        run: |
-          folder=".pio/build/esp32-s3"
-          chip="esp32s3"
-          
-          mkdir -p release/ota/ESP32-S3/
-          cp $folder/firmware.bin release/ota/ESP32-S3/firmware.bin
-          
-          mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          
-          # Corrected bootloader offset for ESP32-S3 from 0x1000 to 0x0
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_mode keep --flash_freq keep --flash_size keep 0x0 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-          
-          zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin
-
-      # =================================================================
-      # Build ESP32-C6
-      # =================================================================
-      - name: Build ESP32-C6 firmware
-        run: platformio run -e esp32-c6
-
-      - name: Create combined binary for ESP32-C6
-        run: |
-          folder=".pio/build/esp32-c6"
-          chip="esp32c6"
-          
-          mkdir -p release/ota/ESP32-C6/
-          cp $folder/firmware.bin release/ota/ESP32-C6/firmware.bin
-          
-          mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_mode keep --flash_freq keep --flash_size keep 0x0 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-          
-          zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin
-
-      # =================================================================
-      # Release and Deploy
-      # =================================================================
-      - name: Create draft release on GitHub
+      - name: Create draft release
         uses: "marvinpinto/action-automatic-releases@latest"
-        if: github.ref == 'refs/heads/master'
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
           prerelease: false
@@ -198,14 +151,12 @@ jobs:
           automatic_release_tag: v${{ env.VERSION }}
           title: v${{ env.VERSION }}
           files: |
-            release/*.zip
+            release_final/*.zip
 
       - name: Create changelog from version file
-        if: github.ref == 'refs/heads/master'
         run: tail -n +3 version | sed 's/^/- /' > changelog
 
       - name: Update release with changelog
-        if: github.ref == 'refs/heads/master'
         uses: ncipollo/release-action@v1
         with:
           allowUpdates: true
@@ -213,6 +164,25 @@ jobs:
           tag: v${{ env.VERSION }}
           draft: true
           bodyFile: "changelog"
+
+  # This job deploys the OTA files to a separate branch for GitHub Pages.
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master'
+    steps:
+      - name: Download all OTA artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ota_artifacts
+      
+      - name: Assemble final OTA directory
+        run: |
+          mkdir -p final_ota_dir
+          # Find all downloaded artifact directories and copy their contents to the final directory
+          find ota_artifacts -mindepth 1 -maxdepth 1 -type d | while read -r dir; do
+            cp -r "$dir"/* final_ota_dir/
+          done
 
       - name: Set release branch for dev
         if: github.ref == 'refs/heads/dev'
@@ -222,16 +192,8 @@ jobs:
         if: github.ref == 'refs/heads/master'
         run: echo "RELEASE_BRANCH=releases-production" >> $GITHUB_ENV
 
-      - name: Deploy to OTA release branch on GitHub Pages
-        if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master'
+      - name: Deploy to Github Pages
         uses: JamesIves/github-pages-deploy-action@v4
         with:
-          folder: release/ota/
-          branch: ${{env.RELEASE_BRANCH}}
-
-      - name: Upload firmware artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: firmwares
-          path: |
-            release/*.zip
+          folder: final_ota_dir
+          branch: ${{ env.RELEASE_BRANCH }}
