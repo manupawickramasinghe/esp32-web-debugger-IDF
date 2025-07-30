@@ -1,3 +1,5 @@
+# This workflow builds the firmware for multiple ESP32 targets,
+# creates release binaries, and deploys them.
 name: Build Releases
 
 on: [push]
@@ -7,120 +9,180 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    steps:     
-      - uses: actions/checkout@v3
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
+          # Fetch all history for all tags and branches
           fetch-depth: 0
-      - uses: actions/cache@v3
+
+      - name: Cache PlatformIO and pip dependencies
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cache/pip
             ~/.platformio/.cache
           key: ${{ runner.os }}-pio
-      - uses: actions/setup-python@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+
       - name: Install PlatformIO Core
         run: pip install --upgrade platformio
-      - name: Set environment variables
+
+      - name: Set VERSION environment variable from file
         run: echo "VERSION=$(head -1 version)" >> $GITHUB_ENV
-      - name: Check if Git-Tag already exist
+
+      - name: Check if Git tag already exists
         run: |
-            TAG="v${{ env.VERSION }}"
-            if git show-ref --tags --verify --quiet "refs/tags/${TAG}" && [[ "${TAG}" != *"DEV"* ]]; then
-              echo "Tag ${TAG} already exists"
-              exit 1
-            else
-              echo "Tag ${TAG} does not exist or is DEV-Branch"
-            fi   
-      - name: Check if version file contains linebreak at the end
+          TAG="v${{ env.VERSION }}"
+          # Fail the job if a non-DEV tag already exists to prevent duplicate releases.
+          if git show-ref --tags --verify --quiet "refs/tags/${TAG}" && [[ "${TAG}" != *"DEV"* ]]; then
+            echo "Error: Tag ${TAG} already exists."
+            exit 1
+          else
+            echo "Tag ${TAG} does not exist or is a DEV version. Proceeding..."
+          fi
+
+      - name: Check for trailing newline in version file
         run: |
           if [ -n "$(tail -c 1 "version")" ]; then
-            echo "The version file has no linebreak at the end"
+            echo "Error: The 'version' file must end with a newline character."
             exit 1
-          fi                
-      - name: Update hash in Global properties
+          fi
+
+      - name: Update firmware version and git hash in source files
         run: |
-          sed -i -e 's|*GLOBAL_HASH = "\(.*\)";|*GLOBAL_HASH = "'"$(git rev-parse --short HEAD)"'";|g'   components/cmd_system/cmd_system.c  
-          sed -i -e 's/DEV-VERSION/${{ env.VERSION }}/g' CMakeLists.txt    
-      - name: Install Python dependencies
+          # Correctly update the git hash in the source file.
+          # The original path was incorrect, and the sed pattern was not robust.
+          # This now points to the correct file 'main/cmd_system.c' and correctly replaces the hash.
+          sed -i -e 's|\(const char \*GLOBAL_HASH = \)".*";|\1"'"$(git rev-parse --short HEAD)"'";|' main/cmd_system.c
+          
+          # Update the project version in CMakeLists.txt
+          sed -i -e 's/DEV-VERSION/${{ env.VERSION }}/g' CMakeLists.txt
+
+      - name: Install Python dependencies for build scripts
         run: |
           python -m pip install --upgrade pip
           pip install htmlmin esptool
+
       - name: Minify HTML files
         run: python .github/workflows/shrinkHTML.py
         shell: sh
+
+      # =================================================================
+      # Build ESP32
+      # =================================================================
       - name: Build ESP32 firmware
         run: platformio run -e esp32
-      - name: Build one binary for ESP32
+
+      - name: Create combined binary for ESP32
         run: |
-          folder=.pio/build/esp32
-          chip=esp32
+          folder=".pio/build/esp32"
+          chip="esp32"
+          
           mkdir -p release/ota/ESP32/
           cp version release/ota/
-          cp $folder/firmware.bin release/ota/ESP32/firmware.bin 
+          cp $folder/firmware.bin release/ota/ESP32/firmware.bin
+          
           mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_freq keep --flash_size keep 0x1000 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_freq keep --flash_size keep 0x1000 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-          mkdir -p release
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_freq keep --flash_size keep 0x1000 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin          
-          mkdir -p release
+          
+          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_mode keep --flash_freq keep --flash_size keep 0x1000 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
+          
           zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
           zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin
 
-      - name: Build ESP32 C3 firmware
+      # =================================================================
+      # Build ESP32-C3
+      # =================================================================
+      - name: Build ESP32-C3 firmware
         run: platformio run -e esp32-c3
-      - name: Build one binary for ESP32 C3
+
+      - name: Create combined binary for ESP32-C3
         run: |
-          folder=.pio/build/esp32-c3
-          chip=esp32c3
+          folder=".pio/build/esp32-c3"
+          chip="esp32c3"
+          
           mkdir -p release/ota/ESP32-C3/
-          cp $folder/firmware.bin release/ota/ESP32-C3/firmware.bin 
+          cp $folder/firmware.bin release/ota/ESP32-C3/firmware.bin
+          
           mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_freq keep --flash_size keep 0x0 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-          mkdir -p release/
+          
+          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_mode keep --flash_freq keep --flash_size keep 0x0 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
+          
           zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
           zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin
-      - name: Build ESP32 S2 firmware
+
+      # =================================================================
+      # Build ESP32-S2
+      # =================================================================
+      - name: Build ESP32-S2 firmware
         run: platformio run -e esp32-s2
-      - name: Build one binary for ESP32 S2
+
+      - name: Create combined binary for ESP32-S2
         run: |
-          folder=.pio/build/esp32-s2
-          chip=esp32s2
+          folder=".pio/build/esp32-s2"
+          chip="esp32s2"
+          
           mkdir -p release/ota/ESP32-S2/
-          cp $folder/firmware.bin release/ota/ESP32-S2/firmware.bin 
+          cp $folder/firmware.bin release/ota/ESP32-S2/firmware.bin
+          
           mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_freq keep --flash_size keep 0x1000 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-          mkdir -p release
+          
+          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_mode keep --flash_freq keep --flash_size keep 0x1000 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
+          
           zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
           zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin
-      - name: Build ESP32 S3 firmware
+
+      # =================================================================
+      # Build ESP32-S3
+      # =================================================================
+      - name: Build ESP32-S3 firmware
         run: platformio run -e esp32-s3
-      - name: Build one binary for ESP32 S3
+
+      - name: Create combined binary for ESP32-S3
         run: |
-            folder=.pio/build/esp32-s3
-            chip=esp32s3
-            mkdir -p release/ota/ESP32-S3/
-            cp $folder/firmware.bin release/ota/ESP32-S3/firmware.bin 
-            mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-            esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_freq keep --flash_size keep 0x1000 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-            mkdir -p release
-            zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-            zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin          
-      - name: Build ESP32 C6 firmware
-        run: platformio run -e esp32-c6
-      - name: Build one binary for ESP32 C6
-        run: |
-          folder=.pio/build/esp32-c6
-          chip=esp32c6
-          mkdir -p release/ota/ESP32-C6/
-          cp $folder/firmware.bin release/ota/ESP32-C6/firmware.bin 
+          folder=".pio/build/esp32-s3"
+          chip="esp32s3"
+          
+          mkdir -p release/ota/ESP32-S3/
+          cp $folder/firmware.bin release/ota/ESP32-S3/firmware.bin
+          
           mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
-          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_freq keep --flash_size keep 0x0 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
-          mkdir -p release/
+          
+          # Corrected bootloader offset for ESP32-S3 from 0x1000 to 0x0
+          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_mode keep --flash_freq keep --flash_size keep 0x0 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
+          
           zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
           zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin
-      - name: Create draft release
+
+      # =================================================================
+      # Build ESP32-C6
+      # =================================================================
+      - name: Build ESP32-C6 firmware
+        run: platformio run -e esp32-c6
+
+      - name: Create combined binary for ESP32-C6
+        run: |
+          folder=".pio/build/esp32-c6"
+          chip="esp32c6"
+          
+          mkdir -p release/ota/ESP32-C6/
+          cp $folder/firmware.bin release/ota/ESP32-C6/firmware.bin
+          
+          mv $folder/firmware.bin $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
+          
+          esptool.py --chip $chip merge_bin -o $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin --flash_mode keep --flash_freq keep --flash_size keep 0x0 $folder/bootloader.bin 0x10000 $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin 0x8000 $folder/partitions.bin
+          
+          zip -j release/${chip}gpio_debugger_update_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_v${{ env.VERSION }}.bin
+          zip -j release/${chip}gpio_debugger_full_v${{ env.VERSION }}.zip $folder/${chip}gpio_debugger_full_v${{ env.VERSION }}.bin
+
+      # =================================================================
+      # Release and Deploy
+      # =================================================================
+      - name: Create draft release on GitHub
         uses: "marvinpinto/action-automatic-releases@latest"
         if: github.ref == 'refs/heads/master'
         with:
@@ -131,10 +193,12 @@ jobs:
           title: v${{ env.VERSION }}
           files: |
             release/*.zip
+
       - name: Create changelog from version file
         if: github.ref == 'refs/heads/master'
-        run: tail -n +3 version | sed 's/^/- /' > changelog           
-      - name: Set changelog
+        run: tail -n +3 version | sed 's/^/- /' > changelog
+
+      - name: Update release with changelog
         if: github.ref == 'refs/heads/master'
         uses: ncipollo/release-action@v1
         with:
@@ -142,24 +206,26 @@ jobs:
           name: v${{ env.VERSION }}
           tag: v${{ env.VERSION }}
           draft: true
-          bodyFile: "changelog"             
-      - name: Set dev branch variable
+          bodyFile: "changelog"
+
+      - name: Set release branch for dev
         if: github.ref == 'refs/heads/dev'
-        run: |
-          echo "RELEASE_BRANCH=releases-staging" >> $GITHUB_ENV  
-      - name: Set master branch variable
+        run: echo "RELEASE_BRANCH=releases-staging" >> $GITHUB_ENV
+
+      - name: Set release branch for master
         if: github.ref == 'refs/heads/master'
-        run: |
-            echo "RELEASE_BRANCH=releases-production" >> $GITHUB_ENV                       
-      - name: Deploy to Github Pages
+        run: echo "RELEASE_BRANCH=releases-production" >> $GITHUB_ENV
+
+      - name: Deploy to OTA release branch on GitHub Pages
         if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master'
-        uses: JamesIves/github-pages-deploy-action@v4        
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
-          folder: release/ota/            
+          folder: release/ota/
           branch: ${{env.RELEASE_BRANCH}}
-      - name: Upload firmwares to build
+
+      - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
-            name: firmwares
-            path: |
-               release/*.zip
+          name: firmwares
+          path: |
+            release/*.zip
