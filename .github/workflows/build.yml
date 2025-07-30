@@ -55,10 +55,16 @@ jobs:
 
       - name: Update firmware version and git hash in source files
         run: |
-          # Correctly update the git hash in the source file.
-          # The original path was incorrect, and the sed pattern was not robust.
-          # This now points to the correct file 'main/cmd_system.c' and correctly replaces the hash.
-          sed -i -e 's|\(const char \*GLOBAL_HASH = \)".*";|\1"'"$(git rev-parse --short HEAD)"'";|' main/cmd_system.c
+          # Find the cmd_system.c file path dynamically to avoid issues with hardcoded paths.
+          FILE_PATH=$(find . -name "cmd_system.c")
+          if [ -z "$FILE_PATH" ]; then
+            echo "Error: cmd_system.c not found in the repository."
+            exit 1
+          fi
+          echo "Found cmd_system.c at: $FILE_PATH"
+          
+          # Correctly update the git hash in the found source file.
+          sed -i -e 's|\(const char \*GLOBAL_HASH = \)".*";|\1"'"$(git rev-parse --short HEAD)"'";|' $FILE_PATH
           
           # Update the project version in CMakeLists.txt
           sed -i -e 's/DEV-VERSION/${{ env.VERSION }}/g' CMakeLists.txt
