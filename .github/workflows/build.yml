@@ -32,8 +32,8 @@ jobs:
 
       - name: Minify HTML files
         run: |
-          pip install htmlmin
-          python .github/workflows/shrinkHTML.py
+          pip3 install htmlmin
+          python3 .github/workflows/shrinkHTML.py
         shell: sh
 
       - name: Build firmware for ${{ matrix.target.chip }}
