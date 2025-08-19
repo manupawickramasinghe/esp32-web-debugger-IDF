@@ -5,6 +5,8 @@ on: [push]
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.2.1
     strategy:
       fail-fast: false
       matrix:
@@ -20,14 +22,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Set up ESP-IDF
-        uses: espressif/idf-actions/setup-idf@v2
-        with:
-          idf_path: ${{ env.IDF_PATH }}
-          idf_version: 'v5.2.1'
-          # We are using a custom cache key to avoid conflicts with other workflows
-          cache_key: idf-v5.2.1-${{ matrix.target.chip }}
 
       - name: Set VERSION environment variable from file
         run: echo "VERSION=$(head -1 version)" >> $GITHUB_ENV
@@ -56,7 +50,6 @@ jobs:
 
       - name: Build firmware for ${{ matrix.target.chip }}
         run: |
-          . ${{ env.IDF_PATH }}/export.sh
           idf.py set-target ${{ matrix.target.chip }}
           idf.py build
 
