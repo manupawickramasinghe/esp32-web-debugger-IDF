@@ -32,6 +32,7 @@ jobs:
 
       - name: Minify HTML files
         run: |
+          apt-get update && apt-get install -y python3-pip
           pip3 install htmlmin
           python3 .github/workflows/shrinkHTML.py
         shell: sh
