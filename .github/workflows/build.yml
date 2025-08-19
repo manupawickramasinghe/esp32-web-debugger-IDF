@@ -23,6 +23,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fix git ownership
+        run: git config --global --add safe.directory ${{ github.workspace }}
+
       - name: Set VERSION environment variable from file
         run: echo "VERSION=$(head -1 version)" >> $GITHUB_ENV
 
@@ -107,7 +110,7 @@ jobs:
       - name: Create draft release
         uses: "marvinpinto/action-automatic-releases@latest"
         with:
-          repo_.github/workflows/build.ymltoken: "${{ secrets.GITHUB_TOKEN }}"
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
           prerelease: false
           draft: true
           automatic_release_tag: v${{ env.VERSION }}
