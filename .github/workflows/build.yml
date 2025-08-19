@@ -39,11 +39,13 @@ jobs:
 
       - name: Build firmware for ${{ matrix.target.chip }}
         run: |
+          . /opt/esp/idf/export.sh
           idf.py set-target ${{ matrix.target.chip }}
           idf.py build
 
       - name: Create combined binary for ${{ matrix.target.chip }}
         run: |
+          . /opt/esp/idf/export.sh
           folder="build"
           chip="${{ matrix.target.chip }}"
           version="${{ env.VERSION }}"
@@ -105,7 +107,7 @@ jobs:
       - name: Create draft release
         uses: "marvinpinto/action-automatic-releases@latest"
         with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          repo_.github/workflows/build.ymltoken: "${{ secrets.GITHUB_TOKEN }}"
           prerelease: false
           draft: true
           automatic_release_tag: v${{ env.VERSION }}
