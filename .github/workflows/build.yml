@@ -46,6 +46,9 @@ jobs:
           idf.py set-target ${{ matrix.target.chip }}
           idf.py build
 
+      - name: List build directory
+        run: ls -R build
+
       - name: Create combined binary for ${{ matrix.target.chip }}
         run: |
           . /opt/esp/idf/export.sh
