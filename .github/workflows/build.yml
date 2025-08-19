@@ -1,23 +1,19 @@
-# This workflow builds firmware for multiple ESP32 targets, creates release
-# binaries, and deploys them to GitHub Releases and GitHub Pages.
-# It has been refactored to use a matrix strategy for maintainability.
 name: Build and Release Firmware
 
 on: [push]
 
 jobs:
-  # This job builds the firmware for all target platforms in parallel using a matrix.
   build:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # Allows other jobs to continue even if one fails
+      fail-fast: false
       matrix:
         target:
-          - { pio_env: 'esp32',    chip: 'esp32',    boot_offset: '0x1000', ota_dir: 'ESP32' }
-          - { pio_env: 'esp32-c3', chip: 'esp32c3',  boot_offset: '0x0',    ota_dir: 'ESP32-C3' }
-          - { pio_env: 'esp32-s2', chip: 'esp32s2',  boot_offset: '0x1000', ota_dir: 'ESP32-S2' }
-          - { pio_env: 'esp32-s3', chip: 'esp32s3',  boot_offset: '0x0',    ota_dir: 'ESP32-S3' }
-          - { pio_env: 'esp32-c6', chip: 'esp32c6',  boot_offset: '0x0',    ota_dir: 'ESP32-C6' }
+          - { chip: 'esp32', boot_offset: '0x1000', ota_dir: 'ESP32' }
+          - { chip: 'esp32c3', boot_offset: '0x0', ota_dir: 'ESP32-C3' }
+          - { chip: 'esp32s2', boot_offset: '0x1000', ota_dir: 'ESP32-S2' }
+          - { chip: 'esp32s3', boot_offset: '0x0', ota_dir: 'ESP32-S3' }
+          - { chip: 'esp32c6', boot_offset: '0x0', ota_dir: 'ESP32-C6' }
 
     steps:
       - name: Checkout repository
@@ -25,78 +21,61 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache PlatformIO and pip dependencies
-        uses: actions/cache@v4
+      - name: Set up ESP-IDF
+        uses: espressif/idf-actions/setup-idf@v2
         with:
-          path: |
-            ~/.cache/pip
-            ~/.platformio/.cache
-          key: ${{ runner.os }}-pio-${{ matrix.target.pio_env }}
-          restore-keys: |
-            ${{ runner.os }}-pio-
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Install PlatformIO Core and dependencies
-        run: |
-          pip install --upgrade platformio
-          pip install htmlmin esptool
+          idf_path: ${{ env.IDF_PATH }}
+          idf_version: 'v5.2.1'
+          # We are using a custom cache key to avoid conflicts with other workflows
+          cache_key: idf-v5.2.1-${{ matrix.target.chip }}
 
       - name: Set VERSION environment variable from file
         run: echo "VERSION=$(head -1 version)" >> $GITHUB_ENV
 
       - name: Update firmware version and git hash in source files
         run: |
-          # Find the cmd_system.c file path dynamically to avoid issues with hardcoded paths.
           FILE_PATH=$(find . -name "cmd_system.c")
           if [ -z "$FILE_PATH" ]; then
             echo "Error: cmd_system.c not found in the repository."
             exit 1
           fi
-          # Ensure only one file was found
           if [ $(echo "$FILE_PATH" | wc -l) -gt 1 ]; then
             echo "Error: Found multiple cmd_system.c files. Aborting."
             echo "$FILE_PATH"
             exit 1
           fi
           echo "Found cmd_system.c at: $FILE_PATH"
-          
-          # Correctly update the git hash in the found source file.
           sed -i -e 's|\(const char \*GLOBAL_HASH = \)".*";|\1"'"$(git rev-parse --short HEAD)"'";|' $FILE_PATH
-          
-          # Update the project version in CMakeLists.txt
           sed -i -e 's/DEV-VERSION/${{ env.VERSION }}/g' CMakeLists.txt
 
       - name: Minify HTML files
-        run: python .github/workflows/shrinkHTML.py
+        run: |
+          pip install htmlmin
+          python .github/workflows/shrinkHTML.py
         shell: sh
 
-      - name: Build firmware for ${{ matrix.target.pio_env }}
-        run: platformio run -e ${{ matrix.target.pio_env }}
+      - name: Build firmware for ${{ matrix.target.chip }}
+        run: |
+          . ${{ env.IDF_PATH }}/export.sh
+          idf.py set-target ${{ matrix.target.chip }}
+          idf.py build
 
       - name: Create combined binary for ${{ matrix.target.chip }}
         run: |
-          folder=".pio/build/${{ matrix.target.pio_env }}"
+          folder="build"
           chip="${{ matrix.target.chip }}"
           version="${{ env.VERSION }}"
           boot_offset="${{ matrix.target.boot_offset }}"
           
-          # Create directories for release assets
           mkdir -p release/zips
           mkdir -p release/ota/${{ matrix.target.ota_dir }}
 
-          # Prepare firmware files for OTA and release
           cp version release/ota/
           cp $folder/firmware.bin release/ota/${{ matrix.target.ota_dir }}/firmware.bin
           mv $folder/firmware.bin $folder/${chip}_gpio_debugger_v${version}.bin
           
-          # Merge binaries for a full flash
-          esptool.py --chip $chip merge_bin -o $folder/${chip}_gpio_debugger_full_v${version}.bin --flash_mode keep --flash_freq keep --flash_size keep $boot_offset $folder/bootloader.bin 0x10000 $folder/${chip}_gpio_debugger_v${version}.bin 0x8000 $folder/partitions.bin
+          esptool.py --chip $chip merge_bin -o $folder/${chip}_gpio_debugger_full_v${version}.bin --flash_mode keep --flash_freq keep --flash_size keep $boot_offset $folder/bootloader/bootloader.bin 0x10000 $folder/${chip}_gpio_debugger_v${version}.bin 0x8000 $folder/partition_table/partition-table.bin
           
-          # Zip release assets
           zip -j release/zips/${chip}_gpio_debugger_update_v${version}.zip $folder/${chip}_gpio_debugger_v${version}.bin
           zip -j release/zips/${chip}_gpio_debugger_full_v${version}.zip $folder/${chip}_gpio_debugger_full_v${version}.bin
 
@@ -112,7 +91,6 @@ jobs:
           name: ota-files-${{ matrix.target.chip }}
           path: release/ota/
 
-  # This job runs after all builds are complete. It creates the GitHub release.
   release:
     runs-on: ubuntu-latest
     needs: build
@@ -165,7 +143,6 @@ jobs:
           draft: true
           bodyFile: "changelog"
 
-  # This job deploys the OTA files to a separate branch for GitHub Pages.
   deploy:
     runs-on: ubuntu-latest
     needs: build
@@ -179,7 +156,6 @@ jobs:
       - name: Assemble final OTA directory
         run: |
           mkdir -p final_ota_dir
-          # Find all downloaded artifact directories and copy their contents to the final directory
           find ota_artifacts -mindepth 1 -maxdepth 1 -type d | while read -r dir; do
             cp -r "$dir"/* final_ota_dir/
           done
