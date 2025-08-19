@@ -89,6 +89,12 @@ static void write_pin(int pin, bool value) {
     }
 }
 
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32C6)
+#define PWM_LEDC_SPEED_MODE LEDC_LOW_SPEED_MODE
+#else
+#define PWM_LEDC_SPEED_MODE LEDC_HIGH_SPEED_MODE
+#endif
+
 static void set_pwm(int pin, int freq) {
     int idx = get_pin_index(pin);
     if (idx >= 0) pwm_frequencies[idx] = freq;
@@ -96,7 +102,7 @@ static void set_pwm(int pin, int freq) {
     int channel = pin % 8;
 
     ledc_timer_config_t ledc_timer = {
-        .speed_mode = LEDC_HIGH_SPEED_MODE,
+        .speed_mode = PWM_LEDC_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_8_BIT,
         .timer_num = LEDC_TIMER_0,
         .freq_hz = freq,
@@ -106,7 +112,7 @@ static void set_pwm(int pin, int freq) {
 
     ledc_channel_config_t ledc_channel = {
         .gpio_num = pin,
-        .speed_mode = LEDC_HIGH_SPEED_MODE,
+        .speed_mode = PWM_LEDC_SPEED_MODE,
         .channel = channel,
         .timer_sel = LEDC_TIMER_0,
         .duty = 127,
