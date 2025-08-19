@@ -26,20 +26,8 @@ jobs:
       - name: Set VERSION environment variable from file
         run: echo "VERSION=$(head -1 version)" >> $GITHUB_ENV
 
-      - name: Update firmware version and git hash in source files
+      - name: Update firmware version in source files
         run: |
-          FILE_PATH=$(find . -name "cmd_system.c")
-          if [ -z "$FILE_PATH" ]; then
-            echo "Error: cmd_system.c not found in the repository."
-            exit 1
-          fi
-          if [ $(echo "$FILE_PATH" | wc -l) -gt 1 ]; then
-            echo "Error: Found multiple cmd_system.c files. Aborting."
-            echo "$FILE_PATH"
-            exit 1
-          fi
-          echo "Found cmd_system.c at: $FILE_PATH"
-          sed -i -e 's|\(const char \*GLOBAL_HASH = \)".*";|\1"'"$(git rev-parse --short HEAD)"'";|' $FILE_PATH
           sed -i -e 's/DEV-VERSION/${{ env.VERSION }}/g' CMakeLists.txt
 
       - name: Minify HTML files
