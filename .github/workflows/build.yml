@@ -46,9 +46,6 @@ jobs:
           idf.py set-target ${{ matrix.target.chip }}
           idf.py build
 
-      - name: List build directory
-        run: ls -R build
-
       - name: Create combined binary for ${{ matrix.target.chip }}
         run: |
           . /opt/esp/idf/export.sh
@@ -61,13 +58,19 @@ jobs:
           mkdir -p release/ota/${{ matrix.target.ota_dir }}
 
           cp version release/ota/
-          cp $folder/firmware.bin release/ota/${{ matrix.target.ota_dir }}/firmware.bin
-          mv $folder/firmware.bin $folder/${chip}_gpio_debugger_v${version}.bin
+          cp $folder/esp32-web-debugger.bin release/ota/${{ matrix.target.ota_dir }}/firmware.bin
+
+          # Rename the main binary
+          mv $folder/esp32-web-debugger.bin $folder/${chip}_gpio_debugger_v${version}.bin
+
+          # Copy other binaries for release
+          cp $folder/bootloader/bootloader.bin $folder/bootloader.bin
+          cp $folder/partition_table/partition-table.bin $folder/partitions.bin
           
-          esptool.py --chip $chip merge_bin -o $folder/${chip}_gpio_debugger_full_v${version}.bin --flash_mode keep --flash_freq keep --flash_size keep $boot_offset $folder/bootloader/bootloader.bin 0x10000 $folder/${chip}_gpio_debugger_v${version}.bin 0x8000 $folder/partition_table/partition-table.bin
+          esptool.py --chip $chip merge_bin -o $folder/${chip}_gpio_debugger_full_v${version}.bin --flash_mode keep --flash_freq keep --flash_size keep $boot_offset $folder/bootloader.bin 0x10000 $folder/${chip}_gpio_debugger_v${version}.bin 0x8000 $folder/partitions.bin
           
           zip -j release/zips/${chip}_gpio_debugger_update_v${version}.zip $folder/${chip}_gpio_debugger_v${version}.bin
-          zip -j release/zips/${chip}_gpio_debugger_full_v${version}.zip $folder/${chip}_gpio_debugger_full_v${version}.bin
+          zip -j release/zips/${chip}_gpio_debugger_full_v${version}.zip $folder/${chip}_gpio_debugger_full_v${version}.bin $folder/bootloader.bin $folder/partitions.bin
 
       - name: Upload firmware zip artifact
         uses: actions/upload-artifact@v4
