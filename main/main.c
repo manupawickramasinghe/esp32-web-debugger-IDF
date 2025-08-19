@@ -89,7 +89,7 @@ static void write_pin(int pin, bool value) {
     }
 }
 
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32C6)
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C6)
 #define PWM_LEDC_SPEED_MODE LEDC_LOW_SPEED_MODE
 #else
 #define PWM_LEDC_SPEED_MODE LEDC_HIGH_SPEED_MODE
